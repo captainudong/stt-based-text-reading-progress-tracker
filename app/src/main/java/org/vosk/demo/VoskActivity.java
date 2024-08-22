@@ -19,10 +19,13 @@ import android.app.Activity;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.text.method.ScrollingMovementMethod;
+import android.util.Log;
 import android.widget.Button;
 import android.widget.TextView;
 import android.widget.ToggleButton;
 
+import org.json.JSONException;
+import org.json.JSONObject;
 import org.vosk.LibVosk;
 import org.vosk.LogLevel;
 import org.vosk.Model;
@@ -34,10 +37,14 @@ import org.vosk.android.StorageService;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.StringTokenizer;
 
 import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+
+import info.debatty.java.stringsimilarity.NormalizedLevenshtein;
 
 public class VoskActivity extends Activity implements
         RecognitionListener {
@@ -56,6 +63,13 @@ public class VoskActivity extends Activity implements
     private SpeechStreamService speechStreamService;
     private TextView resultView;
 
+    String decodingFilename;
+    String referenceText;
+
+    String previousPartialResult = "";
+    String partialResult = "";
+    NormalizedLevenshtein l;
+    int referenceTextCnt;
     @Override
     public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -64,6 +78,26 @@ public class VoskActivity extends Activity implements
         // Setup layout
         resultView = findViewById(R.id.result_text);
         setUiState(STATE_START);
+        l = new NormalizedLevenshtein();
+        decodingFilename = "SPK073KBSCU065M013.wav";
+        String jsonFilename = decodingFilename.replaceAll(".wav", "") + ".json";
+        try {
+            JSONObject obj = new JSONObject(loadJSONFromAsset(jsonFilename));
+            JSONObject obj2 = obj.getJSONObject("script");
+            String referText = obj2.getString("text");
+            referText = referText.replaceAll("[^ㄱ-ㅎㅏ-ㅣ가-힣a-zA-Z\\s]", "");
+            referText = referText.trim();
+
+            referenceText = referText + " " + referText;
+            StringTokenizer st = new StringTokenizer(referenceText, " ");
+            referenceTextCnt = st.countTokens() / 2;
+
+
+            Log.d("json불러오기", referText);
+        } catch (JSONException e) {
+            throw new RuntimeException(e);
+        }
+
 
         findViewById(R.id.recognize_file).setOnClickListener(view -> recognizeFile());
         findViewById(R.id.recognize_mic).setOnClickListener(view -> recognizeMicrophone());
@@ -80,6 +114,61 @@ public class VoskActivity extends Activity implements
         }
     }
 
+    public String loadJSONFromAsset(String jsonFilename){
+        String json = null;
+        try {
+            InputStream is = getAssets().open(jsonFilename);
+            int size = is.available();
+            byte[] buffer = new byte[size];
+            is.read(buffer);
+            is.close();
+            json = new String(buffer, "UTF-8");
+        } catch (IOException ex) {
+            ex.printStackTrace();
+            return null;
+        }
+        return json;
+    }
+
+    double bestScore;
+    String targetText;
+    public void findReadingPosition(String asrText){
+        //읽을 텍스트를 분리
+        String[] splitReferenceText = referenceText.split(" ");
+        // 읽을 텍스트 ngram 배열 생성(크기5)
+        ArrayList<String> candidateTextArray = new ArrayList<>();
+        String elementText = "";
+        for (String str:splitReferenceText){
+            if (candidateTextArray.size() > 4){
+                break;
+            }
+            elementText = elementText + " " + str;
+            elementText = elementText.trim();
+            candidateTextArray.add(elementText);
+        }
+//        Log.d("읽기 후보군 배열", candidateTextArray.toString());
+
+        //읽은 텍스트 찾기
+        bestScore = 0;
+        targetText = "";
+        for (String str:candidateTextArray){
+            double score = 1 - l.distance(asrText, str);
+            if (score > bestScore){
+                bestScore = score;
+                targetText = str;
+
+            }
+        }
+
+        if (bestScore > 0.3){
+            //읽은 텍스트가 유사도 0.3을 넘었을 때 읽어야할 전체 텍스트에서 해당 부분 삭제
+            Log.d("읽기 위치 추적 결과", targetText);
+            referenceText = referenceText.replaceFirst(targetText, "");
+            referenceText = referenceText.trim();
+        }
+
+    }
+
     private void initModel() {
         StorageService.unpack(this, "model-en-us", "model",
                 (model) -> {
@@ -87,6 +176,26 @@ public class VoskActivity extends Activity implements
                     setUiState(STATE_READY);
                 },
                 (exception) -> setErrorState("Failed to unpack the model" + exception.getMessage()));
+    }
+
+    public String excludeCommonString(String str1, String str2){
+        char[] array1 = str1.toCharArray();
+        char[] array2 = str2.toCharArray();
+
+        int len1 = array1.length;
+        int len2 = array2.length;
+
+        int[][] dp = new int[len1 + 1][len2 + 1];
+        int max = 0;
+        for (int i = 1; i <= len1; i++){
+            for (int j=1; j<= len2; j++){
+                if (array1[i-1] == array2[j-1]){
+                    dp[i][j] = dp[i-1][j-1] + 1;
+                    max = Math.max(max, dp[i][j]);
+                }
+            }
+        }
+        return str1.substring(max);
     }
 
 
@@ -132,11 +241,51 @@ public class VoskActivity extends Activity implements
         if (speechStreamService != null) {
             speechStreamService = null;
         }
+
+        Log.d("읽어야할 어절 수", String.valueOf(referenceTextCnt));
+        StringTokenizer st = new StringTokenizer(referenceText, " ");
+        int readCnt = st.countTokens();
+//        Log.d("읽고 남은 어절 수", String.valueOf(readCnt));
+        int differenceCnt = Math.abs(referenceTextCnt - readCnt);
+        Log.d("오차", String.valueOf(differenceCnt));
     }
 
     @Override
     public void onPartialResult(String hypothesis) {
         resultView.append(hypothesis + "\n");
+
+        hypothesis = hypothesis.replaceFirst("partial","");
+        hypothesis = hypothesis.replaceAll("[^ㄱ-ㅎㅏ-ㅣ가-힣a-zA-Z0-9\\s]", "");
+        hypothesis = hypothesis.trim();
+
+
+        if (!hypothesis.equals("") && !previousPartialResult.equals("")){
+
+            if (hypothesis.contains(previousPartialResult)){
+                partialResult = hypothesis.replaceFirst(previousPartialResult, "");
+            } else {
+                partialResult = excludeCommonString(hypothesis, previousPartialResult);
+
+            }
+            partialResult = partialResult.trim();
+            if (!partialResult.equals("")){
+                Log.d("음성인식 결과", partialResult);
+                findReadingPosition(partialResult);
+            }
+
+        } else {
+            if (!hypothesis.equals("")){
+                Log.d("음성인식 결과", hypothesis);
+                findReadingPosition(hypothesis);
+            }
+        }
+
+
+        previousPartialResult = hypothesis;
+
+
+
+
     }
 
     @Override
@@ -207,14 +356,15 @@ public class VoskActivity extends Activity implements
         } else {
             setUiState(STATE_FILE);
             try {
-                Recognizer rec = new Recognizer(model, 16000.f, "[\"one zero zero zero one\", " +
-                        "\"oh zero one two three four five six seven eight nine\", \"[unk]\"]");
+//                Recognizer rec = new Recognizer(model, 16000.f, "[\"one zero zero zero one\", " +
+//                        "\"oh zero one two three four five six seven eight nine\", \"[unk]\"]");
 
-                InputStream ais = getAssets().open(
-                        "10001-90210-01803.wav");
+                Recognizer rec = new Recognizer(model, 44100.f);
+
+                InputStream ais = getAssets().open(decodingFilename);
                 if (ais.skip(44) != 44) throw new IOException("File too short");
 
-                speechStreamService = new SpeechStreamService(rec, ais, 16000);
+                speechStreamService = new SpeechStreamService(rec, ais, 44100);
                 speechStreamService.start(this);
             } catch (IOException e) {
                 setErrorState(e.getMessage());

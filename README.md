@@ -1,9 +1,3 @@
-## About
-
-This demo implements offline speech recognition and speaker identification for mobile applications using Kaldi and Vosk libraries.
-
-Check the [releases](https://github.com/alphacep/vosk-android-demo/releases) for pre-built binaries.
-
-## Documentation
-
-For documentation and instructions please visit the [Vosk Website](https://alphacephei.com/vosk/android).
+STT를 활용하여 주어진 텍스트의 어떤 부분을 읽고 있는지를 추적하는 코드입니다.  
+음성인식 모델은 칼디 기반의 한국어 오픈소스 ASR 프로젝트인 Zeroth Recipe로 학습한 모델을 사용했습니다.  
+Vosk를 사용하면 온디바이스 음성인식을 구현할 수 있습니다.
